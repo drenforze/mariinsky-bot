@@ -20,7 +20,7 @@ from telegram.constants import ParseMode
 # ─── Настройки ────────────────────────────────────────────────────────────────
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "ВСТАВЬТЕ_ВАШ_ТОКЕН_СЮДА")
-CHECK_INTERVAL_MINUTES = int(os.getenv("CHECK_INTERVAL", "60"))
+CHECK_INTERVAL_MINUTES = int(os.getenv("CHECK_INTERVAL", "1"))
 DATA_FILE = Path("data/seen_events.json")
 SUBSCRIBERS_FILE = Path("data/subscribers.json")
 
