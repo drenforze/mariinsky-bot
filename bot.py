@@ -1,8 +1,6 @@
 """
 Telegram-бот для уведомлений о новых событиях в афише Мариинского театра.
 Отслеживает страницу: https://www.mariinsky.ru/playbill/playbill/
-
-Сайт рендерится через JavaScript, поэтому используется playwright.
 """
 
 import asyncio
@@ -75,15 +73,10 @@ def remove_subscriber(chat_id: int) -> bool:
         return True
     return False
 
-# ─── Парсер афиши (через Playwright) ─────────────────────────────────────────
+# ─── Парсер афиши ─────────────────────────────────────────────────────────────
 
-async def fetch_playbill_events() -> list[dict]:
-    """
-    Загружает афишу через headless-браузер и парсит события.
-    Возвращает список: {id, title, date, time, venue, link}
-    """
+async def fetch_playbill_events() -> list:
     events = []
-
     try:
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=True)
@@ -94,56 +87,39 @@ async def fetch_playbill_events() -> list[dict]:
                     "Chrome/120.0.0.0 Safari/537.36"
                 )
             )
-
-            await page.goto(PLAYBILL_URL, wait_until="networkidle", timeout=60_000)
-
-            # Ждём появления любых элементов афиши
+            await page.goto(PLAYBILL_URL, wait_until="networkidle", timeout=60000)
             try:
                 await page.wait_for_selector(
-                    ".b-playbill-item, .playbill__item, .js-playbill-item, "
-                    "[class*='playbill'], [class*='performance'], .b-event, .event-item",
-                    timeout=15_000
+                    ".b-playbill-item, .playbill__item, [class*='playbill'], [class*='performance']",
+                    timeout=15000
                 )
             except Exception:
-                logger.warning("Стандартные селекторы не найдены, продолжаем")
+                pass
 
             raw = await page.evaluate("""
                 () => {
                     const results = [];
-
-                    // Перебираем набор возможных селекторов
                     const candidates = [
-                        '.b-playbill-item',
-                        '.playbill__item',
-                        '.js-playbill-item',
-                        '[data-type="performance"]',
-                        '.performance-item',
-                        '.event-block',
-                        'a[href*="/playbill/"]',
-                        'a[href*="/performance/"]'
+                        '.b-playbill-item', '.playbill__item', '.js-playbill-item',
+                        '[data-type="performance"]', '.performance-item', '.event-block',
+                        'a[href*="/playbill/"]', 'a[href*="/performance/"]'
                     ];
-
                     let items = [];
                     for (const sel of candidates) {
                         items = [...document.querySelectorAll(sel)];
                         if (items.length > 0) break;
                     }
-
                     items.forEach(el => {
                         const titleEl =
                             el.querySelector('.b-performance__title, .title, .name, h2, h3, h4') ||
                             (el.tagName === 'A' ? el : null);
-
                         if (!titleEl) return;
-
                         const titleText = (titleEl.innerText || titleEl.textContent || '').trim();
                         if (!titleText || titleText.length < 3) return;
-
                         const dateEl  = el.querySelector('[class*="date"], time');
                         const timeEl  = el.querySelector('[class*="time"]');
                         const venueEl = el.querySelector('[class*="venue"], [class*="hall"], [class*="stage"]');
                         const linkEl  = el.tagName === 'A' ? el : el.querySelector('a[href]');
-
                         results.push({
                             title: titleText,
                             date:  (dateEl?.innerText  || '').trim(),
@@ -152,11 +128,9 @@ async def fetch_playbill_events() -> list[dict]:
                             link:  linkEl?.href || ''
                         });
                     });
-
                     return results;
                 }
             """)
-
             await browser.close()
 
             seen_titles = set()
@@ -165,27 +139,19 @@ async def fetch_playbill_events() -> list[dict]:
                 if not title or title in seen_titles:
                     continue
                 seen_titles.add(title)
-
                 link = item.get("link", "")
                 if link and not link.startswith("http"):
                     link = BASE_URL + link
-
                 uid_src = f"{title}|{item.get('date', '')}|{item.get('time', '')}"
                 event_id = hashlib.md5(uid_src.encode()).hexdigest()[:12]
-
                 events.append({
-                    "id":    event_id,
-                    "title": title,
-                    "date":  item.get("date", ""),
-                    "time":  item.get("time", ""),
-                    "venue": item.get("venue", ""),
-                    "link":  link,
+                    "id": event_id, "title": title,
+                    "date": item.get("date", ""), "time": item.get("time", ""),
+                    "venue": item.get("venue", ""), "link": link,
                 })
-
     except Exception as e:
-        logger.error(f"Ошибка при парсинге афиши: {e}")
-
-    logger.info(f"Найдено событий в афише: {len(events)}")
+        logger.error(f"Ошибка при парсинге: {e}")
+    logger.info(f"Найдено событий: {len(events)}")
     return events
 
 # ─── Уведомления ──────────────────────────────────────────────────────────────
@@ -202,21 +168,17 @@ def format_event_message(event: dict) -> str:
         lines.append(f'\n🔗 <a href="{event["link"]}">Подробнее / билеты</a>')
     return "\n".join(lines)
 
-
-async def notify_subscribers(bot: Bot, new_events: list[dict]):
+async def notify_subscribers(bot: Bot, new_events: list):
     subscribers = get_subscribers()
     if not subscribers:
-        logger.info("Подписчиков нет.")
         return
     for event in new_events:
         text = format_event_message(event)
         for chat_id in subscribers:
             try:
                 await bot.send_message(
-                    chat_id=chat_id,
-                    text=text,
-                    parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=False,
+                    chat_id=chat_id, text=text,
+                    parse_mode=ParseMode.HTML, disable_web_page_preview=False,
                 )
                 await asyncio.sleep(0.05)
             except Exception as e:
@@ -227,29 +189,24 @@ async def notify_subscribers(bot: Bot, new_events: list[dict]):
 async def check_for_new_events(bot: Bot):
     logger.info("🔍 Проверяем афишу...")
     events = await fetch_playbill_events()
-
     if not events:
-        logger.warning("Список событий пуст — сайт недоступен или изменил структуру.")
+        logger.warning("Список событий пуст.")
         return
-
     seen_ids = get_seen_events()
-
     if not seen_ids:
-        logger.info(f"Первый запуск — запоминаем {len(events)} событий как базовые.")
+        logger.info(f"Первый запуск — запоминаем {len(events)} событий.")
         save_seen_events({e["id"] for e in events})
         return
-
     new_events = [e for e in events if e["id"] not in seen_ids]
-
     if new_events:
-        logger.info(f"🆕 Новых событий: {len(new_events)}")
+        logger.info(f"🆕 Новых: {len(new_events)}")
         await notify_subscribers(bot, new_events)
         seen_ids.update(e["id"] for e in new_events)
         save_seen_events(seen_ids)
     else:
-        logger.info("Новых событий не найдено.")
+        logger.info("Новых событий нет.")
 
-# ─── Команды бота ─────────────────────────────────────────────────────────────
+# ─── Команды ──────────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -257,11 +214,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "✅ <b>Вы подписались на уведомления!</b>\n\n"
             "Буду сообщать, когда в афише Мариинского появятся новые показы.\n\n"
-            "📋 Команды:\n"
-            "/stop — отписаться\n"
-            "/status — статистика\n"
-            "/check — проверить прямо сейчас\n"
-            "/help — справка",
+            "/stop — отписаться\n/status — статистика\n/check — проверить сейчас",
             parse_mode=ParseMode.HTML,
         )
     else:
@@ -269,7 +222,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if remove_subscriber(update.effective_chat.id):
-        await update.message.reply_text("❌ Вы отписались от уведомлений.")
+        await update.message.reply_text("❌ Вы отписались.")
     else:
         await update.message.reply_text("Вы не были подписаны.")
 
@@ -279,56 +232,55 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     seen = get_seen_events()
     status = "✅ подписан" if chat_id in subs else "❌ не подписан"
     await update.message.reply_text(
-        f"Статус: {status}\n"
-        f"Всего подписчиков: {len(subs)}\n"
-        f"Событий в базе: {len(seen)}\n"
-        f"Интервал проверки: каждые {CHECK_INTERVAL_MINUTES} мин.\n"
-        f"Страница: {PLAYBILL_URL}"
+        f"Статус: {status}\nПодписчиков: {len(subs)}\n"
+        f"Событий в базе: {len(seen)}\nПроверка каждые {CHECK_INTERVAL_MINUTES} мин."
     )
 
 async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 Загружаю афишу (~10–15 сек)...")
+    await update.message.reply_text("🔍 Загружаю афишу (~15 сек)...")
     await check_for_new_events(context.application.bot)
-    await update.message.reply_text("✅ Проверка завершена.")
+    await update.message.reply_text("✅ Готово.")
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🎭 <b>Бот афиши Мариинского театра</b>\n\n"
-        f"Отслеживает: {PLAYBILL_URL}\n\n"
-        "/start — подписаться\n"
-        "/stop — отписаться\n"
-        "/status — статус\n"
-        "/check — проверить сейчас\n"
-        "/help — справка",
+        "🎭 <b>Бот афиши Мариинского</b>\n\n"
+        "/start — подписаться\n/stop — отписаться\n"
+        "/status — статус\n/check — проверить сейчас",
         parse_mode=ParseMode.HTML,
     )
 
-# ─── Запуск ────────────────────────────────────────────────────────────────────
+# ─── Запуск ───────────────────────────────────────────────────────────────────
+
+async def post_init(application: Application):
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(
+        check_for_new_events,
+        "interval",
+        minutes=CHECK_INTERVAL_MINUTES,
+        args=[application.bot],
+        next_run_time=datetime.now(),
+    )
+    scheduler.start()
+    logger.info(f"🚀 Планировщик запущен. Проверка каждые {CHECK_INTERVAL_MINUTES} минут.")
 
 def main():
     if BOT_TOKEN == "ВСТАВЬТЕ_ВАШ_ТОКЕН_СЮДА":
-        raise RuntimeError("❌ Укажите BOT_TOKEN через переменную окружения или в коде.")
+        raise RuntimeError("❌ Укажите BOT_TOKEN.")
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
     app.add_handler(CommandHandler("start",  cmd_start))
     app.add_handler(CommandHandler("stop",   cmd_stop))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("check",  cmd_check))
     app.add_handler(CommandHandler("help",   cmd_help))
 
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(
-        check_for_new_events,
-        "interval",
-        minutes=CHECK_INTERVAL_MINUTES,
-        args=[app.bot],
-        next_run_time=datetime.now(),
-    )
-    scheduler.start()
-
-    logger.info(f"🚀 Бот запущен. Проверка каждые {CHECK_INTERVAL_MINUTES} минут.")
+    logger.info("🚀 Бот запущен.")
     app.run_polling(drop_pending_updates=True)
-
 
 if __name__ == "__main__":
     main()
